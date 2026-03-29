@@ -57,81 +57,26 @@ common common-options
 
   default-language: Haskell2010
 
-library haskell-mobile-lifecycle
-  import: common-options
-  visibility: public
-  exposed-modules:
-      HaskellMobile.Lifecycle
-  hs-source-dirs:
-      src-lifecycle
-  build-depends:
-      text
-  c-sources:
-      cbits/android_stubs.c
-      cbits/platform_log.c
-
-library haskell-mobile-ui
-  import: common-options
-  visibility: public
-  exposed-modules:
-      HaskellMobile.Widget
-      HaskellMobile.UIBridge
-      HaskellMobile.Render
-  hs-source-dirs:
-      src-ui
-  build-depends:
-      text,
-      containers
-  c-sources:
-      cbits/ui_bridge.c
-  include-dirs:
-      include
-
 library
   import: common-options
   exposed-modules:
       HaskellMobile
-  reexported-modules:
-      HaskellMobile.Lifecycle
-  signatures:
       HaskellMobile.App
-  other-modules:
-      Paths_haskell_mobile
+      HaskellMobile.Lifecycle
+      HaskellMobile.Widget
+      HaskellMobile.UIBridge
+      HaskellMobile.Render
   hs-source-dirs:
       src
-      src-sig
   build-depends:
-      haskell-mobile:haskell-mobile-lifecycle,
-      haskell-mobile:haskell-mobile-ui,
-      text
-
-library haskell-mobile-default-app
-  import: common-options
-  exposed-modules:
-      HaskellMobile.App
-  hs-source-dirs:
-      default-app
-  build-depends:
-      haskell-mobile:haskell-mobile-lifecycle,
-      haskell-mobile:haskell-mobile-ui,
-      text
-
--- | Instantiates the main library with the default 'HaskellMobile.App'
--- implementation.  Consumers who want a custom app context should create
--- their own instantiation library instead of depending on this one.
-library haskell-mobile-app
-  import: common-options
-  reexported-modules:
-      HaskellMobile,
-      HaskellMobile.Lifecycle,
-      HaskellMobile.App,
-      HaskellMobile.Widget,
-      HaskellMobile.Render
-  build-depends:
-      haskell-mobile,
-      haskell-mobile:haskell-mobile-default-app,
-      haskell-mobile:haskell-mobile-lifecycle,
-      haskell-mobile:haskell-mobile-ui
+      text,
+      containers
+  c-sources:
+      cbits/android_stubs.c
+      cbits/platform_log.c
+      cbits/ui_bridge.c
+  include-dirs:
+      include
 
 executable exe
   import: common-options
@@ -139,7 +84,7 @@ executable exe
   hs-source-dirs:
       app
   build-depends:
-      haskell-mobile:haskell-mobile-app
+      haskell-mobile
   ghc-options: -Wno-unused-packages -threaded -rtsopts "-with-rtsopts=-N -M7G -T -Iw10"
 
 test-suite unit
@@ -147,12 +92,10 @@ test-suite unit
   type: exitcode-stdio-1.0
   main-is: Test.hs
   ghc-options: -Wno-unused-packages -threaded -rtsopts "-with-rtsopts=-N -M7G -T -Iw10"
-  other-modules:
-      Paths_haskell_mobile
   hs-source-dirs:
       test
   build-depends:
       tasty,
       tasty-hunit,
       tasty-quickcheck,
-      haskell-mobile:haskell-mobile-app
+      haskell-mobile

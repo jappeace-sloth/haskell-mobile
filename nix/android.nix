@@ -67,11 +67,11 @@ in pkgs.stdenv.mkDerivation {
     # GHC writes _stub.h files next to sources, so they can't live in
     # the read-only nix store.
     mkdir -p HaskellMobile
-    cp ${../src-lifecycle}/HaskellMobile/Lifecycle.hs HaskellMobile/
-    cp ${../default-app}/HaskellMobile/App.hs HaskellMobile/
-    cp ${../src-ui}/HaskellMobile/Widget.hs HaskellMobile/
-    cp ${../src-ui}/HaskellMobile/UIBridge.hs HaskellMobile/
-    cp ${../src-ui}/HaskellMobile/Render.hs HaskellMobile/
+    cp ${../src}/HaskellMobile/Lifecycle.hs HaskellMobile/
+    cp ${../src}/HaskellMobile/App.hs HaskellMobile/
+    cp ${../src}/HaskellMobile/Widget.hs HaskellMobile/
+    cp ${../src}/HaskellMobile/UIBridge.hs HaskellMobile/
+    cp ${../src}/HaskellMobile/Render.hs HaskellMobile/
 
     # Step 3: Compile Haskell to shared library with cross-GHC.
     # We use --whole-archive to statically link GHC's boot libraries
