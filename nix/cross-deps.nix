@@ -37,18 +37,10 @@ let
 
   # Default overrides needed for cross-compilation:
   # - vector: test suite uses GHC plugins (inspection-testing), incompatible
-  #   with cross-compilation's external interpreter.  Also strip deps from
-  #   vector's internal benchmarks-O2 sub-library (tasty, random) — cabal2nix
-  #   merges these into libraryHaskellDepends, causing link failures because
-  #   tasty depends on unix/process (boot packages not linked into the .so).
+  #   with cross-compilation's external interpreter.
   defaultOverrides = self: super: {
-    vector = pkgs.haskell.lib.overrideCabal
-      (pkgs.haskell.lib.dontBenchmark (pkgs.haskell.lib.dontCheck super.vector))
-      (old: {
-        libraryHaskellDepends = builtins.filter
-          (d: !(d ? pname) || !(builtins.elem d.pname ["tasty" "random"]))
-          (old.libraryHaskellDepends or []);
-      });
+    vector = pkgs.haskell.lib.dontBenchmark
+      (pkgs.haskell.lib.dontCheck super.vector);
   };
 
   # armv7a: disable profiling — LLVM ARM backend crashes in
