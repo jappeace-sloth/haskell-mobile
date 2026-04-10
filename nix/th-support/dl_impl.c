@@ -2,36 +2,108 @@
 #include <string.h>
 #include <elf.h>
 #include <stdint.h>
+#include <unistd.h>
+
+/* Minimal stderr diagnostic (avoids stdio dependency) */
+static void diag(const char *msg) {
+    write(2, msg, strlen(msg));
+}
+static void diag_num(const char *label, unsigned long val) {
+    char buf[32];
+    int i = 31;
+    buf[i] = 0;
+    if (val == 0) { buf[--i] = '0'; }
+    else { while (val > 0 && i > 0) { buf[--i] = '0' + (val % 10); val /= 10; } }
+    diag(label);
+    diag(buf + i);
+    diag("\n");
+}
 
 /*
- * Minimal dlopen/dlsym for a statically linked aarch64 binary.
+ * Minimal dlopen/dlsym for a statically linked Android binary.
  *
  * dlopen: returns a fake non-NULL handle (the binary itself).
- * dlsym:  walks the .dynsym table (populated by --export-dynamic
- *         and --hash-style=sysv) to find symbols by name.
+ * dlsym:  walks the .dynsym table (populated by --export-dynamic)
+ *         to find symbols by name.
  *
- * Requires: -Wl,--export-dynamic -Wl,--hash-style=sysv at link time.
+ * Works for both aarch64 (ELF64) and armv7a (ELF32).
+ * Handles both SysV hash (DT_HASH) and GNU hash (DT_GNU_HASH)
+ * for determining the symbol count.
+ *
+ * Requires: -Wl,--export-dynamic at link time.
  */
 
-/* _DYNAMIC is provided by the linker when --export-dynamic is used. */
-extern Elf64_Dyn _DYNAMIC[] __attribute__((weak));
+/* Architecture-independent ELF types (Bionic lacks ElfW() macro). */
+#if __SIZEOF_POINTER__ == 8
+typedef Elf64_Dyn ElfDyn;
+typedef Elf64_Sym ElfSym;
+typedef Elf64_Addr ElfAddr;
+#else
+typedef Elf32_Dyn ElfDyn;
+typedef Elf32_Sym ElfSym;
+typedef Elf32_Addr ElfAddr;
+#endif
 
-static Elf64_Sym  *g_symtab  = NULL;
+/* _DYNAMIC is provided by the linker when --export-dynamic is used. */
+extern ElfDyn _DYNAMIC[] __attribute__((weak));
+
+static ElfSym     *g_symtab  = NULL;
 static const char *g_strtab  = NULL;
+static uint32_t    g_strsz   = 0;     /* string table size (DT_STRSZ) */
 static uint32_t    g_nsyms   = 0;
 static int         g_inited  = 0;
 
+/* Compute nsyms from GNU hash table.
+ * GNU hash layout: nbuckets, symoffset, bloom_size, bloom_shift,
+ *                  bloom[bloom_size], buckets[nbuckets], chains[...]
+ * The maximum symbol index is the highest bucket value plus the chain
+ * length for that bucket. */
+static uint32_t gnu_hash_nsyms(const uint32_t *gnu_hash) {
+    uint32_t nbuckets   = gnu_hash[0];
+    uint32_t symoffset  = gnu_hash[1];
+    uint32_t bloom_size = gnu_hash[2];
+    /* bloom_shift = gnu_hash[3] */
+#if __SIZEOF_POINTER__ == 8
+    const uint32_t *buckets = gnu_hash + 4 + bloom_size * 2; /* 64-bit bloom words */
+#else
+    const uint32_t *buckets = gnu_hash + 4 + bloom_size;     /* 32-bit bloom words */
+#endif
+    const uint32_t *chains  = buckets + nbuckets;
+
+    /* Find the highest occupied bucket */
+    uint32_t max_idx = 0;
+    uint32_t i;
+    for (i = 0; i < nbuckets; i++) {
+        if (buckets[i] > max_idx)
+            max_idx = buckets[i];
+    }
+    if (max_idx < symoffset) return symoffset; /* all buckets empty */
+
+    /* Follow chain from max_idx until the stop bit (LSB set) */
+    const uint32_t *chain_entry = chains + (max_idx - symoffset);
+    while (!(*chain_entry & 1)) {
+        max_idx++;
+        chain_entry++;
+    }
+    return max_idx + 1;
+}
+
 static void init_symtab(void) {
-    Elf64_Dyn *d;
+    ElfDyn *d;
+    const uint32_t *gnu_hash_ptr = NULL;
     g_inited = 1;
-    if (!_DYNAMIC) return;
+    diag("dl_impl: init_symtab called\n");
+    if (!_DYNAMIC) { diag("dl_impl: _DYNAMIC is NULL!\n"); return; }
     for (d = _DYNAMIC; d->d_tag != DT_NULL; d++) {
         switch (d->d_tag) {
         case DT_SYMTAB:
-            g_symtab = (Elf64_Sym *)(uintptr_t)d->d_un.d_ptr;
+            g_symtab = (ElfSym *)(uintptr_t)d->d_un.d_ptr;
             break;
         case DT_STRTAB:
             g_strtab = (const char *)(uintptr_t)d->d_un.d_ptr;
+            break;
+        case DT_STRSZ:
+            g_strsz = (uint32_t)d->d_un.d_val;
             break;
         case DT_HASH: {
             /* SysV hash table: uint32_t nbuckets, nchain.
@@ -40,8 +112,20 @@ static void init_symtab(void) {
             g_nsyms = h[1];
             break;
         }
+        case DT_GNU_HASH:
+            gnu_hash_ptr = (const uint32_t *)(uintptr_t)d->d_un.d_ptr;
+            break;
         }
     }
+    /* If SysV hash wasn't present, try GNU hash */
+    if (g_nsyms == 0 && gnu_hash_ptr) {
+        diag("dl_impl: using DT_GNU_HASH fallback\n");
+        g_nsyms = gnu_hash_nsyms(gnu_hash_ptr);
+    }
+    diag_num("dl_impl: g_nsyms = ", g_nsyms);
+    diag_num("dl_impl: g_strsz = ", g_strsz);
+    diag_num("dl_impl: g_symtab = ", (unsigned long)g_symtab);
+    diag_num("dl_impl: g_strtab = ", (unsigned long)g_strtab);
 }
 
 void *dlopen(const char *filename, int flags) {
@@ -55,8 +139,10 @@ void *dlsym(void *handle, const char *symbol) {
     uint32_t i;
     (void)handle;
     if (!g_inited) init_symtab();
-    if (!g_symtab || !g_strtab || g_nsyms == 0) return NULL;
+    if (!g_symtab || !g_strtab) return NULL;
     for (i = 0; i < g_nsyms; i++) {
+        /* Bounds check: if st_name is beyond the string table, stop */
+        if (g_strsz > 0 && g_symtab[i].st_name >= g_strsz) break;
         if (g_symtab[i].st_shndx != SHN_UNDEF &&
             g_symtab[i].st_name  != 0 &&
             strcmp(g_strtab + g_symtab[i].st_name, symbol) == 0) {
