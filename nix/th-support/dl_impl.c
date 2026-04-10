@@ -183,11 +183,108 @@ static uidivmod_result_t impl_aeabi_uidivmod(unsigned numerator,
     return (uidivmod_result_t){quot, rem};
 }
 
+/*
+ * 64-bit division helpers for __aeabi_uldivmod / __aeabi_ldivmod.
+ *
+ * These ARM EABI functions use a non-standard calling convention:
+ *   Input:  r0:r1 = numerator, r2:r3 = denominator
+ *   Output: r0:r1 = quotient,  r2:r3 = remainder
+ * This can't be expressed as a C function, so we use naked assembly
+ * thunks that call standard C division implementations.
+ *
+ * The C functions impl_udivmoddi4 / impl_ldivmoddi4 use the standard
+ * AAPCS calling convention: (uint64_t, uint64_t, uint64_t*) -> uint64_t.
+ * The first two uint64_t args occupy r0-r3 identically to __aeabi, so
+ * the thunks just push a remainder pointer on the stack and load back
+ * the remainder into r2:r3 afterward.
+ */
+
+/* 64-bit unsigned division - shift-and-subtract algorithm.
+ * No division operators to avoid recursive __aeabi_uldivmod calls.
+ * noinline + used: ensure the symbol exists for the asm bl target. */
+__attribute__((noinline, used))
+static unsigned long long impl_udivmoddi4(unsigned long long numerator,
+                                           unsigned long long denominator,
+                                           unsigned long long *remainder) {
+    if (denominator == 0) {
+        if (remainder) *remainder = 0;
+        return 0;
+    }
+    unsigned long long quotient = 0;
+    unsigned long long bit = 1;
+    while (denominator <= numerator && !(denominator & (1ULL << 63))) {
+        denominator <<= 1;
+        bit <<= 1;
+    }
+    while (bit) {
+        if (numerator >= denominator) {
+            numerator -= denominator;
+            quotient |= bit;
+        }
+        denominator >>= 1;
+        bit >>= 1;
+    }
+    if (remainder) *remainder = numerator;
+    return quotient;
+}
+
+/* 64-bit signed division via unsigned division. */
+__attribute__((noinline, used))
+static long long impl_ldivmoddi4(long long numerator, long long denominator,
+                                  long long *remainder) {
+    int neg_quot = 0, neg_rem = 0;
+    unsigned long long unum, uden, urem, uquot;
+    if (numerator < 0) { numerator = -numerator; neg_quot = !neg_quot; neg_rem = 1; }
+    if (denominator < 0) { denominator = -denominator; neg_quot = !neg_quot; }
+    unum = (unsigned long long)numerator;
+    uden = (unsigned long long)denominator;
+    uquot = impl_udivmoddi4(unum, uden, &urem);
+    if (remainder)
+        *remainder = neg_rem ? -(long long)urem : (long long)urem;
+    return neg_quot ? -(long long)uquot : (long long)uquot;
+}
+
+/* Assembly thunks matching __aeabi_{u,l}divmod calling convention.
+ * AAPCS maps (uint64_t, uint64_t) to r0:r1, r2:r3 — same as __aeabi.
+ * The uint64_t* remainder pointer is passed on the stack ([sp+0]).
+ * Stack layout: [sp+0..3] = &rem, [sp+4..7] = pad, [sp+8..15] = rem */
+__attribute__((naked))
+static void impl_aeabi_uldivmod(void) {
+    __asm__ __volatile__ (
+        "push {r6, lr}\n"
+        "sub sp, sp, #16\n"
+        "add r6, sp, #8\n"
+        "str r6, [sp]\n"
+        "bl impl_udivmoddi4\n"
+        "ldr r2, [sp, #8]\n"
+        "ldr r3, [sp, #12]\n"
+        "add sp, sp, #16\n"
+        "pop {r6, pc}\n"
+    );
+}
+
+__attribute__((naked))
+static void impl_aeabi_ldivmod(void) {
+    __asm__ __volatile__ (
+        "push {r6, lr}\n"
+        "sub sp, sp, #16\n"
+        "add r6, sp, #8\n"
+        "str r6, [sp]\n"
+        "bl impl_ldivmoddi4\n"
+        "ldr r2, [sp, #8]\n"
+        "ldr r3, [sp, #12]\n"
+        "add sp, sp, #16\n"
+        "pop {r6, pc}\n"
+    );
+}
+
 static void *lookup_aeabi(const char *symbol) {
-    if (strcmp(symbol, "__aeabi_idiv") == 0)    return (void *)impl_aeabi_idiv;
-    if (strcmp(symbol, "__aeabi_uidiv") == 0)   return (void *)impl_aeabi_uidiv;
+    if (strcmp(symbol, "__aeabi_idiv") == 0)     return (void *)impl_aeabi_idiv;
+    if (strcmp(symbol, "__aeabi_uidiv") == 0)    return (void *)impl_aeabi_uidiv;
     if (strcmp(symbol, "__aeabi_idivmod") == 0)  return (void *)impl_aeabi_idivmod;
     if (strcmp(symbol, "__aeabi_uidivmod") == 0) return (void *)impl_aeabi_uidivmod;
+    if (strcmp(symbol, "__aeabi_uldivmod") == 0) return (void *)impl_aeabi_uldivmod;
+    if (strcmp(symbol, "__aeabi_ldivmod") == 0)  return (void *)impl_aeabi_ldivmod;
     return NULL;
 }
 
