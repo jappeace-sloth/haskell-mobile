@@ -192,19 +192,12 @@ WRAPPER
     "--ghc-option=-optl-lmmap_wrapper"
   ];
 
-  iservArmv7aFlags = [
-    "--ghc-option=-optl-Wl,-u,__aeabi_idiv"
-    "--ghc-option=-optl-Wl,-u,__aeabi_uidiv"
-    "--ghc-option=-optl-Wl,-u,__aeabi_idivmod"
-    "--ghc-option=-optl-Wl,-u,__aeabi_uidivmod"
-  ];
-
   thIservOverride = self: super: {
     iserv-proxy = pkgs.haskell.lib.appendConfigureFlags super.iserv-proxy
       (iservStaticFlags
        ++ (if androidArch == "aarch64"
            then iservPieFlag ++ iservAarch64Flags
-           else iservArmv7aFlags));
+           else []));
   };
 
   # armv7a: disable profiling at the package level — the armv7a cross-GHC
