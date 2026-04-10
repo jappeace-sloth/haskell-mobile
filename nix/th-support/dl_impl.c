@@ -8,12 +8,17 @@
 static void diag(const char *msg) {
     write(2, msg, strlen(msg));
 }
-static void diag_num(const char *label, unsigned long val) {
-    char buf[32];
-    int i = 31;
+/* Use hex output to avoid __aeabi_idiv references from decimal division.
+ * On ARM32, val % 10 and val / 10 generate __aeabi_idiv calls which pull
+ * in division helpers that can break static binary TLS initialization. */
+static void diag_hex(const char *label, unsigned long val) {
+    char buf[20];
+    const char *hex = "0123456789abcdef";
+    int i = 19;
     buf[i] = 0;
     if (val == 0) { buf[--i] = '0'; }
-    else { while (val > 0 && i > 0) { buf[--i] = '0' + (val % 10); val /= 10; } }
+    else { while (val > 0 && i > 0) { buf[--i] = hex[val & 0xf]; val >>= 4; } }
+    buf[--i] = 'x'; buf[--i] = '0';
     diag(label);
     diag(buf + i);
     diag("\n");
@@ -122,10 +127,10 @@ static void init_symtab(void) {
         diag("dl_impl: using DT_GNU_HASH fallback\n");
         g_nsyms = gnu_hash_nsyms(gnu_hash_ptr);
     }
-    diag_num("dl_impl: g_nsyms = ", g_nsyms);
-    diag_num("dl_impl: g_strsz = ", g_strsz);
-    diag_num("dl_impl: g_symtab = ", (unsigned long)g_symtab);
-    diag_num("dl_impl: g_strtab = ", (unsigned long)g_strtab);
+    diag_hex("dl_impl: g_nsyms = ", g_nsyms);
+    diag_hex("dl_impl: g_strsz = ", g_strsz);
+    diag_hex("dl_impl: g_symtab = ", (unsigned long)g_symtab);
+    diag_hex("dl_impl: g_strtab = ", (unsigned long)g_strtab);
 }
 
 void *dlopen(const char *filename, int flags) {
@@ -141,8 +146,8 @@ void *dlsym(void *handle, const char *symbol) {
     if (!g_inited) init_symtab();
     if (!g_symtab || !g_strtab) return NULL;
     for (i = 0; i < g_nsyms; i++) {
-        /* Bounds check: if st_name is beyond the string table, stop */
-        if (g_strsz > 0 && g_symtab[i].st_name >= g_strsz) break;
+        /* Bounds check: skip entries with out-of-range st_name */
+        if (g_strsz > 0 && g_symtab[i].st_name >= g_strsz) continue;
         if (g_symtab[i].st_shndx != SHN_UNDEF &&
             g_symtab[i].st_name  != 0 &&
             strcmp(g_strtab + g_symtab[i].st_name, symbol) == 0) {
@@ -163,3 +168,57 @@ int dladdr(const void *addr, void *info) {
     (void)addr; (void)info;
     return 0;
 }
+
+/*
+ * ARM EABI integer division helpers.
+ * GHC's LLVM backend emits __aeabi_idiv calls for ARM32 code.
+ * The Android NDK's compiler-rt omits these (assumes hardware divide).
+ * Defined here (in dl_impl.c) so they're part of dl_impl.o and exported
+ * via --export-dynamic, making them available to the RTS linker via dlsym.
+ * Pure C software division — no hardware divide instructions.
+ */
+#if defined(__arm__) || defined(__thumb__)
+
+unsigned __aeabi_uidiv(unsigned numerator, unsigned denominator) {
+    if (denominator == 0) return 0;
+    unsigned quotient = 0;
+    unsigned bit = 1;
+    while (denominator <= numerator && !(denominator & (1u << 31))) {
+        denominator <<= 1;
+        bit <<= 1;
+    }
+    while (bit) {
+        if (numerator >= denominator) {
+            numerator -= denominator;
+            quotient |= bit;
+        }
+        denominator >>= 1;
+        bit >>= 1;
+    }
+    return quotient;
+}
+
+int __aeabi_idiv(int numerator, int denominator) {
+    int negative = 0;
+    if (numerator < 0) { numerator = -numerator; negative = !negative; }
+    if (denominator < 0) { denominator = -denominator; negative = !negative; }
+    unsigned result = __aeabi_uidiv((unsigned)numerator, (unsigned)denominator);
+    return negative ? -(int)result : (int)result;
+}
+
+typedef struct { int quot; int rem; } __aeabi_idivmod_result_t;
+__aeabi_idivmod_result_t __aeabi_idivmod(int numerator, int denominator) {
+    int quot = __aeabi_idiv(numerator, denominator);
+    int rem = numerator - quot * denominator;
+    return (__aeabi_idivmod_result_t){quot, rem};
+}
+
+typedef struct { unsigned quot; unsigned rem; } __aeabi_uidivmod_result_t;
+__aeabi_uidivmod_result_t __aeabi_uidivmod(unsigned numerator,
+                                           unsigned denominator) {
+    unsigned quot = __aeabi_uidiv(numerator, denominator);
+    unsigned rem = numerator - quot * denominator;
+    return (__aeabi_uidivmod_result_t){quot, rem};
+}
+
+#endif /* __arm__ || __thumb__ */
