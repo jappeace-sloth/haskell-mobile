@@ -11,43 +11,50 @@
  * entire boot package loading to fail, cascading into missing Haskell
  * symbols.
  *
- * Fix: provide the division functions using Thumb-2 SDIV/UDIV hardware
- * instructions.  This file MUST be compiled with -march=armv7-a+idiv
- * (or equivalent) to ensure the assembler accepts sdiv/udiv.
+ * Fix: provide the division functions as pure C software implementations.
+ * No inline assembly needed — avoids hardware divide instruction issues
+ * under QEMU user-mode emulation.
  *
  * Only compiled for ARM32 targets.
  */
 
 #if defined(__arm__) || defined(__thumb__)
 
-/* Use hardware divide instructions (available on Cortex-A7 and above). */
-
-int __aeabi_idiv(int numerator, int denominator) {
-    int result;
-    __asm__ volatile("sdiv %0, %1, %2"
-                     : "=r"(result)
-                     : "r"(numerator), "r"(denominator));
-    return result;
+unsigned __aeabi_uidiv(unsigned numerator, unsigned denominator) {
+    if (denominator == 0) return 0;
+    unsigned quotient = 0;
+    unsigned bit = 1;
+    while (denominator <= numerator && !(denominator & (1u << 31))) {
+        denominator <<= 1;
+        bit <<= 1;
+    }
+    while (bit) {
+        if (numerator >= denominator) {
+            numerator -= denominator;
+            quotient |= bit;
+        }
+        denominator >>= 1;
+        bit >>= 1;
+    }
+    return quotient;
 }
 
-unsigned __aeabi_uidiv(unsigned numerator, unsigned denominator) {
-    unsigned result;
-    __asm__ volatile("udiv %0, %1, %2"
-                     : "=r"(result)
-                     : "r"(numerator), "r"(denominator));
-    return result;
+int __aeabi_idiv(int numerator, int denominator) {
+    int negative = 0;
+    if (numerator < 0) { numerator = -numerator; negative = !negative; }
+    if (denominator < 0) { denominator = -denominator; negative = !negative; }
+    unsigned result = __aeabi_uidiv((unsigned)numerator, (unsigned)denominator);
+    return negative ? -(int)result : (int)result;
 }
 
 /*
  * __aeabi_idivmod: signed division + modulo.
- * ARM EABI calling convention: returns quotient in r0, remainder in r1.
- * We use a struct return which GCC/Clang map to r0+r1 for small structs.
+ * ARM EABI: quotient in r0, remainder in r1.
+ * Small struct return maps to r0+r1 on ARM.
  */
 typedef struct { int quot; int rem; } __aeabi_idivmod_result_t;
 __aeabi_idivmod_result_t __aeabi_idivmod(int numerator, int denominator) {
-    int quot;
-    __asm__ volatile("sdiv %0, %1, %2"
-                     : "=r"(quot) : "r"(numerator), "r"(denominator));
+    int quot = __aeabi_idiv(numerator, denominator);
     int rem = numerator - quot * denominator;
     return (__aeabi_idivmod_result_t){quot, rem};
 }
@@ -55,9 +62,7 @@ __aeabi_idivmod_result_t __aeabi_idivmod(int numerator, int denominator) {
 typedef struct { unsigned quot; unsigned rem; } __aeabi_uidivmod_result_t;
 __aeabi_uidivmod_result_t __aeabi_uidivmod(unsigned numerator,
                                            unsigned denominator) {
-    unsigned quot;
-    __asm__ volatile("udiv %0, %1, %2"
-                     : "=r"(quot) : "r"(numerator), "r"(denominator));
+    unsigned quot = __aeabi_uidiv(numerator, denominator);
     unsigned rem = numerator - quot * denominator;
     return (__aeabi_uidivmod_result_t){quot, rem};
 }

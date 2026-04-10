@@ -95,7 +95,6 @@ WRAPPER
     mkdir -p $out/lib
     ${if androidArch == "armv7a" then ''
       ${androidPkgs.stdenv.cc.targetPrefix}clang -c -fPIC \
-        -mcpu=cortex-a15 \
         -o aeabi_div.o ${./th-support/aeabi_div.c}
       ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libdl.a dl_impl.o aeabi_div.o
     '' else ''
