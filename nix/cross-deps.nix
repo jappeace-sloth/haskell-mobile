@@ -87,20 +87,13 @@ WRAPPER
   # searching the process's own dynamic symbol table.  Combined with
   # --export-dynamic on iserv-proxy-interpreter, this lets the RTS
   # linker resolve symbols (strlen, ghc-prim, etc.) from the static binary.
-  libdlNative = pkgs.runCommand "libdl-native-android" {
+  libdlNative = pkgs.runCommand "libdl-native-android-v2" {
     nativeBuildInputs = [ androidPkgs.stdenv.cc ];
   } ''
     ${androidPkgs.stdenv.cc.targetPrefix}clang -c -fPIC -o dl_impl.o ${./th-support/dl_impl.c}
     ${androidPkgs.stdenv.cc.targetPrefix}clang -c -fPIC -o mmap_wrapper.o ${./th-support/mmap_wrapper.c}
     mkdir -p $out/lib
-    ${if androidArch == "armv7a" then ''
-      ${androidPkgs.stdenv.cc.targetPrefix}clang -c -fPIC \
-        -mcpu=cortex-a15 -mthumb \
-        -o aeabi_div.o ${./th-support/aeabi_div.c}
-      ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libdl.a dl_impl.o aeabi_div.o
-    '' else ''
-      ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libdl.a dl_impl.o
-    ''}
+    ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libdl.a dl_impl.o
     ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libmmap_wrapper.a mmap_wrapper.o
   '';
 
