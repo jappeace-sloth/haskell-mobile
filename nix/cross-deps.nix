@@ -93,7 +93,14 @@ WRAPPER
     ${androidPkgs.stdenv.cc.targetPrefix}clang -c -fPIC -o dl_impl.o ${./th-support/dl_impl.c}
     ${androidPkgs.stdenv.cc.targetPrefix}clang -c -fPIC -o mmap_wrapper.o ${./th-support/mmap_wrapper.c}
     mkdir -p $out/lib
-    ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libdl.a dl_impl.o
+    ${if androidArch == "armv7a" then ''
+      ${androidPkgs.stdenv.cc.targetPrefix}clang -c -fPIC \
+        -mcpu=cortex-a15 -mthumb \
+        -o aeabi_div.o ${./th-support/aeabi_div.c}
+      ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libdl.a dl_impl.o aeabi_div.o
+    '' else ''
+      ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libdl.a dl_impl.o
+    ''}
     ${androidPkgs.stdenv.cc.targetPrefix}ar rcs $out/lib/libmmap_wrapper.a mmap_wrapper.o
   '';
 
@@ -185,12 +192,19 @@ WRAPPER
     "--ghc-option=-optl-lmmap_wrapper"
   ];
 
+  iservArmv7aFlags = [
+    "--ghc-option=-optl-Wl,-u,__aeabi_idiv"
+    "--ghc-option=-optl-Wl,-u,__aeabi_uidiv"
+    "--ghc-option=-optl-Wl,-u,__aeabi_idivmod"
+    "--ghc-option=-optl-Wl,-u,__aeabi_uidivmod"
+  ];
+
   thIservOverride = self: super: {
     iserv-proxy = pkgs.haskell.lib.appendConfigureFlags super.iserv-proxy
       (iservStaticFlags
        ++ (if androidArch == "aarch64"
            then iservPieFlag ++ iservAarch64Flags
-           else []));
+           else iservArmv7aFlags));
   };
 
   # armv7a: disable profiling at the package level — the armv7a cross-GHC
